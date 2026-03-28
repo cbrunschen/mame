@@ -11,12 +11,19 @@
 #include "emu.h"
 #include "at28c64b.h"
 
-static constexpr int AT28C64B_DATA_BYTES = 0x10000;
+static constexpr int AT28C64B_ADDRESS_BITS = 13;
+static constexpr int AT28C64B_DATA_BYTES = (1 << AT28C64B_ADDRESS_BITS);
 static constexpr int AT28C64B_ID_BYTES = 0x40;
 static constexpr int AT28C64B_TOTAL_BYTES = AT28C64B_DATA_BYTES + AT28C64B_ID_BYTES;
 
-static constexpr int AT28C64B_ID_OFFSET = 0x1fc0;
+static constexpr int AT28C64B_ID_OFFSET = AT28C64B_DATA_BYTES;
 static constexpr int AT28C64B_SECTOR_SIZE = 0x40;
+
+// for backward compatibility with a previous implementation that has the wrong size
+static constexpr int AT28C64B_OLD_DATA_BYTES = 0x10000;
+static constexpr int AT28C64B_OLD_ID_OFFSET = AT28C64B_OLD_DATA_BYTES;
+static constexpr int AT28C64B_OLD_TOTAL_BYTES = AT28C64B_OLD_DATA_BYTES + AT28C64B_ID_BYTES;
+
 
 
 //**************************************************************************
@@ -25,7 +32,7 @@ static constexpr int AT28C64B_SECTOR_SIZE = 0x40;
 
 void at28c64b_device::at28c64b_map8(address_map &map)
 {
-	map(0x00000, 0x1003f).ram();
+	map(0x00000, (AT28C64B_TOTAL_BYTES - 1)).ram();
 }
 
 
@@ -45,7 +52,7 @@ at28c64b_device::at28c64b_device(const machine_config &mconfig, const char *tag,
 	: device_t(mconfig, AT28C64B, tag, owner, clock),
 		device_memory_interface(mconfig, *this),
 		device_nvram_interface(mconfig, *this),
-		m_space_config("at28c64b", ENDIANNESS_BIG, 8,  17, 0, address_map_constructor(FUNC(at28c64b_device::at28c64b_map8), this)),
+		m_space_config("at28c64b", ENDIANNESS_BIG, 8, AT28C64B_ADDRESS_BITS + 1, 0, address_map_constructor(FUNC(at28c64b_device::at28c64b_map8), this)),
 		m_a9_12v(0),
 		m_oe_12v(0),
 		m_last_write(-1),
@@ -110,14 +117,34 @@ void at28c64b_device::nvram_default()
 
 bool at28c64b_device::nvram_read(util::read_stream &file)
 {
-	std::vector<uint8_t> buffer(AT28C64B_TOTAL_BYTES);
+	std::vector<uint8_t> buffer(AT28C64B_OLD_TOTAL_BYTES);
 
-	auto const [err, actual] = util::read(file, &buffer[0], AT28C64B_TOTAL_BYTES);
-	if (err || (actual != AT28C64B_TOTAL_BYTES))
+	auto const [err, actual] = util::read(file, &buffer[0], AT28C64B_OLD_TOTAL_BYTES);
+	if (err)
 		return false;
 
-	for (offs_t offs = 0; offs < AT28C64B_TOTAL_BYTES; offs++)
-		space(AS_PROGRAM).write_byte(offs, buffer[offs]);
+	if (actual == AT28C64B_TOTAL_BYTES)
+	{
+		// This was an nvram file written with the new size. 
+		for (offs_t offs = 0; offs < AT28C64B_TOTAL_BYTES; offs++)
+			space(AS_PROGRAM).write_byte(offs, buffer[offs]);
+		return true;
+	}
+	else if (actual == AT28C64B_OLD_TOTAL_BYTES)
+	{
+		// This was an nvram file written with the old size. Copy the first 
+		// AT28C64B_TOTAL_BYTES and the last AT28C64B_ID_BYTES across.
+		for (offs_t offs = 0; offs < AT28C64B_DATA_BYTES; offs++)
+			space(AS_PROGRAM).write_byte(offs, buffer[offs]);
+
+		for (offs_t offs = 0; offs < AT28C64B_ID_BYTES; offs++)
+			space(AS_PROGRAM).write_byte(
+				offs + AT28C64B_ID_OFFSET, 
+				buffer[offs + AT28C64B_OLD_ID_OFFSET]
+		);
+
+		return true;
+	}
 
 	return true;
 }
