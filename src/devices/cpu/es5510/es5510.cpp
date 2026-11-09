@@ -265,6 +265,8 @@ const alu_op_t es5510_device::ALU_OPS[16] = {
 
 // The CMP operation is not affected by being skippable
 #define OP_CMP (4)
+// MOV never updates CCR from ALU flags, but may write CCR directly as its destination
+#define OP_MOV (9)
 
 const op_select_t es5510_device::OPERAND_SELECT[16] = {
 	{ es5510_device::SRC_DST_REG, es5510_device::SRC_DST_REG, es5510_device::SRC_DST_REG, es5510_device::SRC_DST_REG },
@@ -877,16 +879,6 @@ void es5510_device::execute_run() {
 			const op_select_t &opSelect = OPERAND_SELECT[operandSelect];
 			bool skip;
 			bool skippable = (instr & (0x01 << 7)) != 0; // aka the 'SKIP' bit in the instruction word
-			if (skippable) {
-				bool skipConditionSatisfied = (ccr & cmr & FLAG_MASK) != 0;
-				if (isFlagSet(cmr, FLAG_NOT)) {
-					skipConditionSatisfied = !skipConditionSatisfied;
-				}
-				skip = skipConditionSatisfied;
-				LOG_EXEC(". skippable: %x vs %x => skippable = %d\n", ccr, cmr, skip);
-			} else {
-				skip = false;
-			}
 
 			// --- Write Multiplier result N-1
 			LOG_EXEC(". write mulacc:\n");
@@ -934,7 +926,6 @@ void es5510_device::execute_run() {
 			mulacc.src = opSelect.mac_src;
 			mulacc.dst = opSelect.mac_dst;
 			mulacc.accumulate = ((instr >> 6) & 0x01) != 0;
-			mulacc.write_result = !skip;
 
 			// --- Read Multiplier Operands N
 			if (mulacc.src == SRC_DST_REG) {
@@ -968,6 +959,23 @@ void es5510_device::execute_run() {
 				}
 			}
 
+			// --- Evaluate skip condition N
+			// CCR bits only become valid at the end of the complete ALU instruction
+			// cycle, so evaluate the condition after writing ALU result N-1 above.
+			// The multiplier result N is written at T1 of the next instruction, so
+			// setting mulacc.write_result here is still in time.
+			if (skippable) {
+				bool skipConditionSatisfied = (ccr & cmr & FLAG_MASK) != 0;
+				if (isFlagSet(cmr, FLAG_NOT)) {
+					skipConditionSatisfied = !skipConditionSatisfied;
+				}
+				skip = skipConditionSatisfied;
+				LOG_EXEC(". skippable: %x vs %x => skippable = %d\n", ccr, cmr, skip);
+			} else {
+				skip = false;
+			}
+			mulacc.write_result = !skip;
+
 			// *** T2, clock low
 
 			LOG_EXEC("- T2.0\n");
@@ -980,7 +988,8 @@ void es5510_device::execute_run() {
 			alu.src = opSelect.alu_src;
 			alu.dst = opSelect.alu_dst;
 			alu.write_result = !skip || (alu.op == OP_CMP);
-			alu.update_ccr = !skippable || (alu.op == OP_CMP);
+			// MOV may write CCR directly, so don't overwrite it with the captured flags
+			alu.update_ccr = (alu.op == OP_CMP) || (!skippable && (alu.op != OP_MOV));
 
 			if (alu.op == 0xf) {
 				alu_operation_end();
@@ -1024,7 +1033,9 @@ void es5510_device::execute_run() {
 				if (dol_count == 2) LOG_EXEC(", { %x (%d) }", dol[1], util::sext(dol[1], 16));
 				LOG_EXEC(" ] -> [ ");
 
-				dol[0] = dol[1];
+				if (dol_count >= 2) {
+					dol[0] = dol[1];
+				}
 				if (dol_count > 0) {
 					--dol_count;
 				}
@@ -1225,11 +1236,15 @@ void es5510_device::write_to_dol(int32_t value) {
 void es5510_device::alu_operation_end() {
 	// Handle the END instruction separately
 	LOG_EXEC("ES5510: END\n");
+	// END occupies an ALU cycle but has no result to write back
+	alu.write_result = false;
 	// sample the HALT line
 	if (halt_asserted) {
 		// halt
 		state = STATE_HALTED;
 		host_control &= ~0x04; // Signal Host Access OK
+		// halting resets the DOL FIFO pointers (spec 3.5.3)
+		dol_count = 0;
 	}
 	// update the delay line base pointer
 	dbase -= memincrement;
