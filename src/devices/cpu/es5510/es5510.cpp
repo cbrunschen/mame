@@ -1324,7 +1324,8 @@ int32_t es5510_device::alu_operation(uint8_t op, int32_t a, int32_t b, uint8_t &
 
 	case 0xc: // LS15
 		flags = clearFlag(flags, FLAG_N);
-		flags = setFlagTo(flags, FLAG_C, (b & 0x00800000) != 0);
+		// C receives the bit shifted into the sign position and cleared (B bit 8)
+		flags = setFlagTo(flags, FLAG_C, (b & 0x00000100) != 0);
 		return (b << 15) & 0x007fffff;
 
 	case 0xd: // DIFF
