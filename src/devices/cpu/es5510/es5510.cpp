@@ -908,7 +908,12 @@ void es5510_device::execute_run() {
 				machl = mulacc.result;
 				int32_t tmp = mac_overflow ? (machl < 0 ? 0x00800000 : 0x007fffff) : (mulacc.result & 0x0000ffffff000000ULL) >> 24;
 				if (mulacc.dst & SRC_DST_REG) {
-					write_reg(mulacc.cReg, tmp);
+					if (mulacc.cReg == 242) { // MACL: duplicate the upper accumulator half into the lower half
+						const int64_t upper = (machl >> 24) & 0x00ffffff;
+						machl = util::sext((upper << 24) | upper, 48);
+					} else {
+						write_reg(mulacc.cReg, tmp);
+					}
 				}
 				if (mulacc.dst & SRC_DST_DELAY) {
 					write_to_dol(tmp);
