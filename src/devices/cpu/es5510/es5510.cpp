@@ -408,9 +408,11 @@ uint8_t es5510_device::host_r(address_space &space, offs_t offset)
 	case 0x10: LOG("ES5510: Host Read DADR latch[1]: %02x\n", (dadr_latch >>  8) & 0xff); return (dadr_latch >>  8) & 0xff;
 	case 0x11: LOG("ES5510: Host Read DADR latch[0]: %02x\n", (dadr_latch >>  0) & 0xff); return (dadr_latch >>  0) & 0xff;
 
-	case 0x12: LOG("ES5510: Host Reading Host Control\n"); return 0; // Host Control
+	case 0x12: LOG("ES5510: Host Reading Host Control\n"); return host_control; // Host Control
 
-	case 0x16: return 0x27; // Program Counter, for test purposes only
+	// While halted the hardware PC is used for memory refresh. The refresh
+	// counter is not modelled, so return zero in that state.
+	case 0x16: return (state == STATE_RUNNING) ? pc : 0; // Program Counter, for test purposes only
 	}
 
 	// default: 0.
@@ -442,7 +444,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 	case 0x05: instr_latch = ((instr_latch & 0xffff00ffffffULL) | (int64_t(data)&0xff)<<24); LOG("ES5510: Host Write INSTR latch[3] = %02x -> %012x\n", data, instr_latch); break;
 	case 0x06: instr_latch = ((instr_latch & 0xffffff00ffffULL) | (int64_t(data)&0xff)<<16); LOG("ES5510: Host Write INSTR latch[2] = %02x -> %012x\n", data, instr_latch); break;
 	case 0x07: instr_latch = ((instr_latch & 0xffffffff00ffULL) | (int64_t(data)&0xff)<< 8); LOG("ES5510: Host Write INSTR latch[1] = %02x -> %012x\n", data, instr_latch); break;
-	case 0x08: instr_latch = ((instr_latch & 0xffffffffff00ULL) | (int64_t(data)&0xff)<< 0); LOG("ES5510: Host Write INSTR latch[0] = %02x -> %012x\n", data, instr_latch); break;
+	case 0x08: instr_latch = (((instr_latch & 0xffffffffff00ULL) | (int64_t(data)&0xff)<< 0) & 0xfffffffffff8ULL); LOG("ES5510: Host Write INSTR latch[0] = %02x -> %012x\n", data, instr_latch); break;
 
 		/* 0x09 to 0x0b DIL Register (r/o) */
 
@@ -483,11 +485,12 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 		host_control = (host_control & 0x4) | (data & 0x3);
 		if (BIT(host_control, 1)) // RAM clear
 		{
-			// TODO: Timing, MEMSIZ and DLENGTH behavior
 			if (state == STATE_HALTED) // only in halted
 			{
-				for (int i = 0; i < DRAM_SIZE; i++)
-					dram[i] = 0;
+				// Clear only the delay-line region selected by DLENGTH/MEMSIZ
+				int32_t const last = std::min<int32_t>((dlength & memmask) >> memshift, DRAM_SIZE - 1);
+				std::fill(&dram[0], &dram[last + 1], 0);
+				dbase = 0;
 			}
 			host_control &= ~0x2;
 		}
@@ -544,7 +547,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 		LOG("ES5510: Host Write INSTR %02x %012x: %s\n", data, instr_latch & 0xffffffffffffULL, buf);
 #endif
 		if (data < 0xa0) {
-			instr[data] = instr_latch & 0xffffffffffffULL;
+			instr[data] = instr_latch & 0xfffffffffff8ULL;
 		}
 		break;
 
@@ -554,7 +557,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 		LOG("ES5510: Host Write INSTR+GPR %02x (%s): %012x %06x (%d): %s\n", data, REGNAME(data&0xff), instr_latch, gpr_latch, util::sext(gpr_latch, 24), buf);
 #endif
 		if (data < 0xa0) {
-			instr[data] = instr_latch;
+			instr[data] = instr_latch & 0xfffffffffff8ULL;
 		}
 		write_reg(data, gpr_latch);
 		break;
@@ -679,7 +682,7 @@ void es5510_device::device_reset() {
 	dil_latch = dol_latch = dadr_latch = gpr_latch = 0;
 	instr_latch = uint64_t(0);
 	ram_sel = 0;
-	host_control = 0x04; // Signal Host Access not OK
+	host_control = 0x00; // Host Access OK while the ESP is not executing
 	host_serial = 0;
 	sigreg = 0;
 	mulshift = 2;
