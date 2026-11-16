@@ -30,7 +30,7 @@ public:
 		ES5510_HALT = 0
 	};
 
-	enum state_t {
+	enum state_t : uint8_t {
 		STATE_RUNNING = 0,
 		STATE_HALTED = 1
 	};
@@ -40,7 +40,7 @@ public:
 		const char * const opcode;
 	};
 
-	enum op_src_dst_t {
+	enum op_src_dst_t : uint8_t {
 		SRC_DST_REG =   1 << 0,
 		SRC_DST_DELAY = 1 << 1,
 		SRC_DST_BOTH =  (1 << 0) | (1 << 1)
@@ -60,7 +60,7 @@ public:
 		RAM_CONTROL_IO
 	};
 
-	enum ram_cycle_t {
+	enum ram_cycle_t : uint8_t {
 		RAM_CYCLE_READ = 0,
 		RAM_CYCLE_WRITE = 1,
 		RAM_CYCLE_DUMP_FIFO = 2
@@ -163,11 +163,11 @@ private:
 	int32_t bbase;
 	int32_t dbase;
 	int32_t sigreg;
-	int mulshift;
+	uint8_t mulshift;
 	int8_t ccr;           // really, 5 bits, left justified
 	int8_t cmr;           // really, 6 bits, left justified
 	int16_t dol[2];
-	int dol_count;
+	uint8_t dol_count;
 
 	std::unique_ptr<uint64_t[]> instr;
 	std::unique_ptr<int16_t[]> dram;

@@ -46,6 +46,11 @@ static int exec_cc = 0;
 
 DEFINE_DEVICE_TYPE(ES5510, es5510_device, "es5510", "Ensoniq ES5510")
 
+// permit our enums to be saved
+ALLOW_SAVE_TYPE(es5510_device::state_t);
+ALLOW_SAVE_TYPE(es5510_device::op_src_dst_t);
+ALLOW_SAVE_TYPE(es5510_device::ram_cycle_t);
+
 constexpr uint8_t FLAG_N = 1 << 7;
 constexpr uint8_t FLAG_C = 1 << 6;
 constexpr uint8_t FLAG_V = 1 << 5;
@@ -164,6 +169,7 @@ es5510_device::es5510_device(const machine_config &mconfig, const char *tag, dev
 	, ser3r(0)
 	, ser3l(0)
 	, machl(0)
+	, mac_overflow(false)
 	, dil(0)
 	, memsiz(0x00ffffff)
 	, memmask(0x00000000)
@@ -527,6 +533,7 @@ void es5510_device::device_start() {
 	save_item(NAME(icount));
 	save_item(NAME(halt_asserted));
 	save_item(NAME(pc));
+	save_item(NAME(state));
 	save_item(NAME(ser0r));
 	save_item(NAME(ser0l));
 	save_item(NAME(ser1r));
@@ -568,6 +575,8 @@ void es5510_device::device_start() {
 
 	save_item(NAME(alu.aReg));
 	save_item(NAME(alu.bReg));
+	save_item(NAME(alu.src));
+	save_item(NAME(alu.dst));
 	save_item(NAME(alu.op));
 	save_item(NAME(alu.aValue));
 	save_item(NAME(alu.bValue));
@@ -577,6 +586,8 @@ void es5510_device::device_start() {
 
 	save_item(NAME(mulacc.cReg));
 	save_item(NAME(mulacc.dReg));
+	save_item(NAME(mulacc.src));
+	save_item(NAME(mulacc.dst));
 	save_item(NAME(mulacc.accumulate));
 	save_item(NAME(mulacc.cValue));
 	save_item(NAME(mulacc.dValue));
@@ -586,12 +597,15 @@ void es5510_device::device_start() {
 
 	save_item(NAME(ram.address));
 	save_item(NAME(ram.io));
+	save_item(NAME(ram.cycle));
 
 	save_item(NAME(ram_p.address));
 	save_item(NAME(ram_p.io));
+	save_item(NAME(ram_p.cycle));
 
 	save_item(NAME(ram_pp.address));
 	save_item(NAME(ram_pp.io));
+	save_item(NAME(ram_pp.cycle));
 }
 
 void es5510_device::device_reset() {
