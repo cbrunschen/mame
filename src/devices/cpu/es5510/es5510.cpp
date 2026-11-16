@@ -924,7 +924,10 @@ void es5510_device::execute_run() {
 				LOG_EXEC(" ]\n");
 			}
 
-			++pc;
+			// END handles the PC itself (spec 5.2.1, 5.4.1); other instructions advance it
+			if (alu.op != 0xf) {
+				++pc;
+			}
 		}
 		--icount;
 	}
@@ -1130,7 +1133,8 @@ void es5510_device::alu_operation_end() {
 	if (dbase < 0) {
 		dbase = dlength;
 	}
-	// Possibly reset the PC
+	// END resets the PC, except when halting: there it keeps counting for internal
+	// refresh until the ESP resumes at location 0 (spec 5.2.1, 5.4.1)
 	if (state == STATE_RUNNING) {
 		pc = 0;
 	}
