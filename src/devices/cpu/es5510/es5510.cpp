@@ -255,9 +255,12 @@ const alu_op_t es5510_device::ALU_OPS[16] = {
 };
 
 // The CMP operation is not affected by being skippable
-#define OP_CMP (4)
+constexpr uint8_t OP_CMP = 4;
 // MOV never updates CCR from ALU flags, but may write CCR directly as its destination
-#define OP_MOV (9)
+constexpr uint8_t OP_MOV = 9;
+
+// Only the most significant 45 bits of a microinstruction word are used
+constexpr uint64_t INSTR_USED_MASK = 0xffff'ffff'fff8ULL;
 
 const op_select_t es5510_device::OPERAND_SELECT[16] = {
 	{ es5510_device::SRC_DST_REG, es5510_device::SRC_DST_REG, es5510_device::SRC_DST_REG, es5510_device::SRC_DST_REG },
@@ -318,10 +321,12 @@ uint8_t es5510_device::host_r(address_space &space, offs_t offset)
 	case 0x10: LOG("ES5510: Host Read DADR latch[1]: %02x\n", (dadr_latch >>  8) & 0xff); return (dadr_latch >>  8) & 0xff;
 	case 0x11: LOG("ES5510: Host Read DADR latch[0]: %02x\n", (dadr_latch >>  0) & 0xff); return (dadr_latch >>  0) & 0xff;
 
+	// Host Access OK/ (bit 2) here tracks whether the ESP is executing rather than
+	// the GPR/INSTR transfer handshake of spec 5.1.4; host writes are applied at once.
 	case 0x12: LOG("ES5510: Host Reading Host Control\n"); return host_control; // Host Control
 
-	// While halted the hardware PC is used for memory refresh. The refresh
-	// counter is not modelled, so return zero in that state.
+	// While halted the hardware PC is used for internal refresh (spec 5.4.1); that
+	// counting is not modelled, so return zero in that state.
 	case 0x16: return (state == STATE_RUNNING) ? pc : 0; // Program Counter, for test purposes only
 	}
 
@@ -351,7 +356,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 	case 0x05: instr_latch = ((instr_latch & 0xffff00ffffffULL) | (int64_t(data)&0xff)<<24); LOG("ES5510: Host Write INSTR latch[3] = %02x -> %012x\n", data, instr_latch); break;
 	case 0x06: instr_latch = ((instr_latch & 0xffffff00ffffULL) | (int64_t(data)&0xff)<<16); LOG("ES5510: Host Write INSTR latch[2] = %02x -> %012x\n", data, instr_latch); break;
 	case 0x07: instr_latch = ((instr_latch & 0xffffffff00ffULL) | (int64_t(data)&0xff)<< 8); LOG("ES5510: Host Write INSTR latch[1] = %02x -> %012x\n", data, instr_latch); break;
-	case 0x08: instr_latch = (((instr_latch & 0xffffffffff00ULL) | (int64_t(data)&0xff)<< 0) & 0xfffffffffff8ULL); LOG("ES5510: Host Write INSTR latch[0] = %02x -> %012x\n", data, instr_latch); break;
+	case 0x08: instr_latch = (((instr_latch & 0xffffffffff00ULL) | (int64_t(data)&0xff)<< 0) & INSTR_USED_MASK); LOG("ES5510: Host Write INSTR latch[0] = %02x -> %012x\n", data, instr_latch); break;
 
 		/* 0x09 to 0x0b DIL Register (r/o) */
 
@@ -395,6 +400,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 			if (state == STATE_HALTED) // only in halted
 			{
 				// Clear only the delay-line region selected by DLENGTH/MEMSIZ
+				// TODO: clearing is instantaneous here; the hardware walks DBASE one step per cycle
 				int32_t const last = std::min<int32_t>((dlength & memmask) >> memshift, DRAM_SIZE - 1);
 				std::fill(&dram[0], &dram[last + 1], 0);
 				dbase = 0;
@@ -457,7 +463,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 		}
 #endif
 		if (data < 0xa0) {
-			instr[data] = instr_latch & 0xfffffffffff8ULL;
+			instr[data] = instr_latch & INSTR_USED_MASK;
 		}
 		break;
 
@@ -470,7 +476,7 @@ void es5510_device::host_w(offs_t offset, uint8_t data)
 		}
 #endif
 		if (data < 0xa0) {
-			instr[data] = instr_latch & 0xfffffffffff8ULL;
+			instr[data] = instr_latch & INSTR_USED_MASK;
 		}
 		write_reg(data, gpr_latch);
 		break;
@@ -597,7 +603,7 @@ void es5510_device::device_reset() {
 	dil_latch = dol_latch = dadr_latch = gpr_latch = 0;
 	instr_latch = uint64_t(0);
 	ram_sel = 0;
-	host_control = 0x00; // Host Access OK while the ESP is not executing
+	host_control = 0x00; // Host Access OK: no GPR/INSTR transfer is pending after reset
 	host_serial = 0;
 	sigreg = 0;
 	mulshift = 2;
@@ -719,7 +725,6 @@ void es5510_device::execute_run() {
 
 			uint8_t operandSelect = (uint8_t)((cur_instr >> 8) & 0x0f);
 			const op_select_t &opSelect = OPERAND_SELECT[operandSelect];
-			bool skip;
 			bool skippable = (cur_instr & (0x01 << 7)) != 0; // aka the 'SKIP' bit in the instruction word
 
 			// --- Write Multiplier result N-1
@@ -811,6 +816,7 @@ void es5510_device::execute_run() {
 			// cycle, so evaluate the condition after writing ALU result N-1 above.
 			// The multiplier result N is written at T1 of the next instruction, so
 			// setting mulacc.write_result here is still in time.
+			bool skip = false;
 			if (skippable) {
 				bool skipConditionSatisfied = (ccr & cmr & FLAG_MASK) != 0;
 				if (isFlagSet(cmr, FLAG_NOT)) {
@@ -818,8 +824,6 @@ void es5510_device::execute_run() {
 				}
 				skip = skipConditionSatisfied;
 				LOG_EXEC(". skippable: %x vs %x => skippable = %d\n", ccr, cmr, skip);
-			} else {
-				skip = false;
 			}
 			mulacc.write_result = !skip;
 
